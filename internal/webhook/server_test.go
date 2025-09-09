@@ -1,4 +1,4 @@
-package main
+package webhook
 
 import (
 	"fmt"
@@ -7,9 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/canonical/mayfly/internal/queue"
 )
 
 const webhookPath = "/webhook"
+const payload = `{"message":"Hello, Alice!"}`
+const secret = "fake-secret"
+const valid_signature_header = "0aca2d7154cddad4f56f246cad61f1485df34b8056e10c4e4799494376fb3413" // HMAC SHA256 of body with secret "fake-secret"
 
 type FakeQueue struct {
 	Messages [][]byte
@@ -30,10 +35,12 @@ func TestWebhookForwarded(t *testing.T) {
 	body := `{"message":"Hello, Alice!"}`
 	req := httptest.NewRequest(http.MethodPost, webhookPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(WebhookSignatureHeader, valid_signature_header)
 	w := httptest.NewRecorder()
 	fakeQueue := FakeQueue{}
-	var queue Queue = &fakeQueue
-	initQueue(queue)
+	var msgQueue queue.Queue = &fakeQueue
+	initQueue(msgQueue)
+	initWebhookSecret(secret)
 	webhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
@@ -55,10 +62,14 @@ func TestWebhookQueueError(t *testing.T) {
 	body := `{"message":"Hello, Alice!"}`
 	req := httptest.NewRequest(http.MethodPost, webhookPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(WebhookSignatureHeader, valid_signature_header)
+
 	w := httptest.NewRecorder()
 
-	var queue Queue = &ErrorQueue{}
-	initQueue(queue)
+	var msgQueue queue.Queue = &ErrorQueue{}
+	initQueue(msgQueue)
+	initWebhookSecret(secret)
+
 	webhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
@@ -71,39 +82,17 @@ func TestWebhookMissingSignatureHeader(t *testing.T) {
 	body := `{"message":"Hello, Alice!"}`
 	req := httptest.NewRequest(http.MethodPost, webhookPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	//req.Header.Set("X-Hub-Signature-256", "invalid-signature")
 	w := httptest.NewRecorder()
 
 	fakeQueue := FakeQueue{}
-	var queue Queue = &fakeQueue
-	initQueue(queue)
+	var msgQueue queue.Queue = &fakeQueue
+	initQueue(msgQueue)
+	initWebhookSecret(secret)
 	webhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
 		t.Errorf("expected status 403 got %v", res.Status)
-		return
-	}
-}
-
-func TestWebhookValidSignature(t *testing.T) {
-	body := `{"message":"Hello, Alice!"}`
-	secret := "fake-secret"
-	expected_signature_header := "0aca2d7154cddad4f56f246cad61f1485df34b8056e10c4e4799494376fb3413" // HMAC SHA256 of body with secret "fake-secret"
-	req := httptest.NewRequest(http.MethodPost, webhookPath, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(WebhookSignatureHeader, expected_signature_header)
-	w := httptest.NewRecorder()
-
-	fakeQueue := FakeQueue{}
-	var queue Queue = &fakeQueue
-	initQueue(queue)
-	initWebhookSecret(secret)
-	webhookHandler(w, req)
-	res := w.Result()
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Errorf("expected status 200 got %v", res.Status)
 		return
 	}
 }
@@ -118,8 +107,8 @@ func TestWebhookInvalidSignature(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	fakeQueue := FakeQueue{}
-	var queue Queue = &fakeQueue
-	initQueue(queue)
+	var msgQueue queue.Queue = &fakeQueue
+	initQueue(msgQueue)
 	initWebhookSecret(secret)
 	webhookHandler(w, req)
 	res := w.Result()

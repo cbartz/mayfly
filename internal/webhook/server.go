@@ -1,4 +1,4 @@
-package main
+package webhook
 
 import (
 	"crypto/hmac"
@@ -6,15 +6,17 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+
+	"github.com/canonical/mayfly/internal/queue"
 )
 
 const WebhookSignatureHeader = "X-Hub-Signature-256"
 
-var queue Queue
+var msgQueue queue.Queue
 var webhookSecret string
 
-func initQueue(queueToSet Queue) {
-	queue = queueToSet
+func initQueue(queueToSet queue.Queue) {
+	msgQueue = queueToSet
 }
 
 func initWebhookSecret(secret string) {
@@ -42,7 +44,7 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = queue.Push(body)
+	err = msgQueue.Push(body)
 	if err != nil {
 		http.Error(w, "Unable to push to queue", http.StatusInternalServerError)
 		return
