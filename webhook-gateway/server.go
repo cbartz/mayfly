@@ -1,68 +1,56 @@
 package main
 
 import (
-	"context"
-	"log"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"net/http"
-	"time"
-
-	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func main() {
+const WebhookSignatureHeader = "X-Hub-Signature-256"
 
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
+var queue Queue
+var webhookSecret string
 
-	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
-
-	q, err := ch.QueueDeclare(
-		"hello", // name
-		false,   // durable
-		false,   // delete when unused
-		false,   // exclusive
-		false,   // no-wait
-		nil,     // arguments
-	)
-	failOnError(err, "Failed to declare a queue")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		// Write new line delimited json in a stream, reading out input from another channel
-
-		push_to_rabbitmq(q, ch, ctx, []byte("Hello World!"))
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-
-	// create a channel to communicate with handler above
-	log.Fatal(http.ListenAndServe(":8080", nil))
-
+func initQueue(queueToSet Queue) {
+	queue = queueToSet
 }
 
-func failOnError(err error, msg string) {
+func initWebhookSecret(secret string) {
+	webhookSecret = secret
+}
+
+func webhookHandler(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+	defer r.Body.Close()
+
+	signature := r.Header.Get(WebhookSignatureHeader)
+	if signature == "" {
+		http.Error(w, "Missing signature header", http.StatusForbidden)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Panicf("%s: %s", msg, err)
+		http.Error(w, "Unable to read request body", http.StatusBadRequest)
+		return
+	}
+
+	if hmac_sha256(body, webhookSecret) != signature {
+		http.Error(w, "Invalid signature", http.StatusForbidden)
+		return
+	}
+
+	err = queue.Push(body)
+	if err != nil {
+		http.Error(w, "Unable to push to queue", http.StatusInternalServerError)
+		return
 	}
 }
 
-func push_to_rabbitmq(queue amqp.Queue, ch *amqp.Channel, ctx context.Context, data []byte) error {
-	body := "Hello World!"
-	err := ch.PublishWithContext(ctx,
-		"",         // exchange
-		queue.Name, // routing key
-		false,      // mandatory
-		false,      // immediate
-		amqp.Publishing{
-			ContentType: "text/plain",
-			Body:        []byte(body),
-		})
-	failOnError(err, "Failed to publish a message")
-	log.Printf(" [x] Sent %s\n", body)
-	return nil
+func hmac_sha256(message []byte, secret string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(message)
+	return hex.EncodeToString(h.Sum(nil))
 }
