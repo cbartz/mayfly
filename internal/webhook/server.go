@@ -15,15 +15,15 @@ const WebhookSignatureHeader = "X-Hub-Signature-256"
 var msgQueue queue.Queue
 var webhookSecret string
 
-func initQueue(queueToSet queue.Queue) {
+func InitQueue(queueToSet queue.Queue) {
 	msgQueue = queueToSet
 }
 
-func initWebhookSecret(secret string) {
+func InitWebhookSecret(secret string) {
 	webhookSecret = secret
 }
 
-func webhookHandler(w http.ResponseWriter, r *http.Request) {
+func WebhookHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
 	defer r.Body.Close()
 

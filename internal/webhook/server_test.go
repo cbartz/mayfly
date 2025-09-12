@@ -39,9 +39,9 @@ func TestWebhookForwarded(t *testing.T) {
 	w := httptest.NewRecorder()
 	fakeQueue := FakeQueue{}
 	var msgQueue queue.Queue = &fakeQueue
-	initQueue(msgQueue)
-	initWebhookSecret(secret)
-	webhookHandler(w, req)
+	InitQueue(msgQueue)
+	InitWebhookSecret(secret)
+	WebhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -67,10 +67,10 @@ func TestWebhookQueueError(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	var msgQueue queue.Queue = &ErrorQueue{}
-	initQueue(msgQueue)
-	initWebhookSecret(secret)
+	InitQueue(msgQueue)
+	InitWebhookSecret(secret)
 
-	webhookHandler(w, req)
+	WebhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusInternalServerError {
@@ -86,9 +86,9 @@ func TestWebhookMissingSignatureHeader(t *testing.T) {
 
 	fakeQueue := FakeQueue{}
 	var msgQueue queue.Queue = &fakeQueue
-	initQueue(msgQueue)
-	initWebhookSecret(secret)
-	webhookHandler(w, req)
+	InitQueue(msgQueue)
+	InitWebhookSecret(secret)
+	WebhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
@@ -108,9 +108,9 @@ func TestWebhookInvalidSignature(t *testing.T) {
 
 	fakeQueue := FakeQueue{}
 	var msgQueue queue.Queue = &fakeQueue
-	initQueue(msgQueue)
-	initWebhookSecret(secret)
-	webhookHandler(w, req)
+	InitQueue(msgQueue)
+	InitWebhookSecret(secret)
+	WebhookHandler(w, req)
 	res := w.Result()
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
