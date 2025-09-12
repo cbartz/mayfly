@@ -122,7 +122,6 @@ func (q *AmqpQueue) Push(msg []byte) error {
 
 	if confirmation != true {
 		return errors.New("message not confirmed")
-		// raise error
 	}
 	return nil
 }

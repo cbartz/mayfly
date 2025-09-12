@@ -3,65 +3,52 @@ package queue
 import (
 	"testing"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
 
-type FakeAmqpChannel struct {
-	mock.Mock
-}
-
-func (f FakeAmqpChannel) PublishWithDeferredConfirm(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (deferred amqp.DeferredConfirmation, err error) {
-	f.Mock.Called(exchange, key, mandatory, immediate, msg)
-	return amqp.DeferredConfirmation{}, nil
-}
-
-func (f FakeAmqpChannel) Close() error {
-	f.Mock.Called()
-	return nil
-}
-
-type FakeAmqpConnection struct {
-	mock.Mock
-}
-
-func (f FakeAmqpConnection) Channel() (*AmqpChannel, error) {
-	var amqpChannel AmqpChannel
-	amqpChannel = FakeAmqpChannel{}
-	return &amqpChannel, nil
-}
-
-func (f FakeAmqpConnection) Close() error {
-	f.Mock.Called()
-	return nil
-}
-
-func TestClose(t *testing.T) {
-	fakeAmqpConnection := FakeAmqpConnection {}
-	amqpConnection.On("Close").Return(nil)
-	queue := &AmqpQueue{
-		URI:  "amqp://guest:guest@localhost:5672/",
-		Name: "test-queue",
-		Conn: &((AmqpConnection) amqpConnection),
+func TestPushWithSuccess(t *testing.T) {
+	/*
+		arrange: create a fake AmqpQueue with a producer that always confirms
+		act: push a message to the queue
+		assert: no error is returned
+	*/
+	producerChan := make(chan ProduceMsg, 1)
+	fakeQueue := AmqpQueue{
+		URI:          "amqp://guest:guest@localhost:5672/",
+		Name:         "test-queue",
+		ProducerChan: producerChan,
 	}
-	err := queue.Close()
+
+	go func() {
+		produceMsg := <-producerChan
+		produceMsg.confirmationChan <- true
+	}()
+
+	err := fakeQueue.Push([]byte("test message"))
+
 	assert.NoError(t, err)
 }
 
-type MockedQueue struct {
-	mock.Mock
-}
+func TestPushWithFailure(t *testing.T) {
+	/*
+		arrange: create a fake AmqpQueue with a producer that always fails to confirm
+		act: push a message to the queue
+		assert: an error is returned
+	*/
+	producerChan := make(chan ProduceMsg, 1)
+	fakeQueue := AmqpQueue{
+		URI:          "amqp://guest:guest@localhost:5672/",
+		Name:         "test-queue",
+		ProducerChan: producerChan,
+	}
 
-//func TestNewAmqpQueue(t *testing.T) {
-//	// This is a placeholder test to ensure the package compiles and can be tested.
-//	// Actual tests would require a running AMQP server and are beyond the scope of this example.
-//	t.Log("NewAmqpQueue function exists and can be called")
-//
-//	_, err := NewAmqpQueue("amqp://guest:guest@localhost:5672/", "test-queue")
-//	if err != nil {
-//		t.Logf("Expected error when connecting to non-existent AMQP server: %v", err)
-//	} else {
-//		t.Error("Expected an error when connecting to non-existent AMQP server, but got none")
-//	}
-//}
+	go func() {
+		produceMsg := <-producerChan
+		produceMsg.confirmationChan <- false
+	}()
+
+	err := fakeQueue.Push([]byte("test message"))
+
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "message not confirmed")
+}
