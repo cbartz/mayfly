@@ -20,7 +20,7 @@ type AmqpChannel interface {
 }
 
 type AmqpConnection interface {
-	Channel() (*AmqpChannel, error)
+	Channel() (AmqpChannel, error)
 	Close() error
 }
 
@@ -58,13 +58,19 @@ func (q *AmqpQueue) StartProducer() {
 
 func connect(uri string) (AmqpChannel, chan *amqp.Error, error) {
 	conn, err := amqp.Dial(uri)
-	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
+	if err != nil {
+		return nil, nil, errors.New("Failed to connect to RabbitMQ")
+	}
+	//defer conn.Close()
 
 	ch, err := conn.Channel()
+	if err != nil {
+		return nil, nil, errors.New("Failed to open a channel")
+	}
+
 	ch.Confirm(false)
-	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
+
+	//defer ch.Close()
 
 	errChan := make(chan *amqp.Error, 1)
 	ch.NotifyClose(errChan)
