@@ -14,7 +14,8 @@ type Queue interface {
 }
 
 type AmqpChannel interface {
-	PublishWithDeferredConfirm(exchange, key string, mandatory, immediate bool, msg amqp.Publishing) (deferred amqp.DeferredConfirmation, err error)
+	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
+	PublishWithDeferredConfirm(exchange string, key string, mandatory, immediate bool, msg amqp.Publishing) (*amqp.DeferredConfirmation, error)
 	Close() error
 }
 
@@ -22,6 +23,9 @@ type AmqpConnection interface {
 	Channel() (*AmqpChannel, error)
 	Close() error
 }
+
+type ConfirmHandler func(confirmationChan chan bool, deferredConfirmation *amqp.DeferredConfirmation)
+type ConnectFunc func(uri string) (AmqpChannel, chan *amqp.Error, error)
 
 type ProduceMsg struct {
 	msg              []byte
@@ -44,16 +48,16 @@ func NewAmqpQueue(uri, name string) *AmqpQueue {
 
 func (q *AmqpQueue) StartProducer() {
 	go func() {
-		err := Producer(q, q.ProducerChan)
+
+		err := Producer(q, q.ProducerChan, make(chan bool), connect, confirmHandler)
 		if err != nil {
 			log.Panicf("Producer error: %s", err)
 		}
 	}()
 }
 
-func Producer(q *AmqpQueue, producerChan chan ProduceMsg) error {
-
-	conn, err := amqp.Dial(q.URI)
+func connect(uri string) (AmqpChannel, chan *amqp.Error, error) {
+	conn, err := amqp.Dial(uri)
 	failOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 
@@ -62,7 +66,17 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg) error {
 	failOnError(err, "Failed to open a channel")
 	defer ch.Close()
 
-	_, err = ch.QueueDeclare(
+	errChan := make(chan *amqp.Error, 1)
+	ch.NotifyClose(errChan)
+	return ch, errChan, nil
+}
+
+func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool, connectFunc ConnectFunc, confirmHandlerFunc ConfirmHandler) error {
+
+	amqpChannel, connErrorChan, err := connectFunc(q.URI)
+	failOnError(err, "Failed to connect to RabbitMQ") // TODO return error and let caller handle it
+
+	_, err = amqpChannel.QueueDeclare(
 		q.Name, // name
 		true,   // durable
 		false,  // delete when unused
@@ -74,9 +88,20 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg) error {
 
 	for {
 
-		produceMsg := <-producerChan
+		var produceMsg ProduceMsg
+		select {
 
-		deferred_confirm, err := ch.PublishWithDeferredConfirm(
+		case produceMsg = <-producerChan:
+		case _ = <-shutdownChan:
+			return nil
+		case err := <-connErrorChan:
+			log.Println("Connection error:", err)
+			var connectErr error
+			amqpChannel, connErrorChan, connectErr = connectFunc(q.URI)
+			failOnError(connectErr, "Failed to reconnect to RabbitMQ")
+		}
+
+		deferred_confirm, err := amqpChannel.PublishWithDeferredConfirm(
 			"",     // exchange
 			q.Name, // routing key
 			false,  // mandatory
@@ -94,10 +119,9 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg) error {
 		}
 		log.Println("Waiting for confirmation...", deferred_confirm)
 
-		failOnError(err, "Failed to publish") // TODO add error distinguishment and reconnection logic
-
-		go confirmHandler(produceMsg.confirmationChan, deferred_confirm)
+		go confirmHandlerFunc(produceMsg.confirmationChan, deferred_confirm)
 	}
+
 	return nil
 }
 
