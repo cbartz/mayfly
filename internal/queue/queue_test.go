@@ -1,12 +1,15 @@
 package queue
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 )
+
+const QueueWithDeclareError = "queue-with-declare-error"
 
 type MockAmqpChannel struct {
 	queueName         string
@@ -19,6 +22,9 @@ func (ch *MockAmqpChannel) PublishWithDeferredConfirm(exchange string, key strin
 }
 
 func (ch *MockAmqpChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error) {
+	if name == QueueWithDeclareError {
+		return amqp.Queue{}, errors.New("failed to declare queue")
+	}
 	ch.queueName = name
 	return amqp.Queue{}, nil
 }
@@ -187,4 +193,40 @@ func TestProducerChannelShutDownTriesReconnect(t *testing.T) {
 	}, time.Second, 1, "connect should be called multiple times")
 	shutdownChan <- true
 
+}
+
+func TestProducerConnectError(t *testing.T) {
+	producerChan := make(chan ProduceMsg, 1)
+	shutdownChan := make(chan bool, 1)
+	fakeQueue := AmqpQueue{
+		URI:          "amqp://guest:guest@localhost:5672/",
+		Name:         "test-queue",
+		ProducerChan: producerChan,
+	}
+	fakeAmqpChan := MockAmqpChannel{}
+	connectFunc := (func(uri string) (AmqpChannel, chan *amqp.Error, error) {
+		return &fakeAmqpChan, nil, errors.New("error")
+	})
+
+	err := Producer(&fakeQueue, producerChan, shutdownChan, connectFunc, mockConfirmHandlerSuccess)
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "Failed to connect to RabbitMQ")
+}
+
+func TestProducerQueueDeclareError(t *testing.T) {
+	producerChan := make(chan ProduceMsg, 1)
+	shutdownChan := make(chan bool, 1)
+	fakeQueue := AmqpQueue{
+		URI:          "amqp://guest:guest@localhost:5672/",
+		Name:         QueueWithDeclareError,
+		ProducerChan: producerChan,
+	}
+	fakeAmqpChan := MockAmqpChannel{}
+	connectFunc := (func(uri string) (AmqpChannel, chan *amqp.Error, error) {
+		return &fakeAmqpChan, make(chan *amqp.Error), nil
+	})
+
+	err := Producer(&fakeQueue, producerChan, shutdownChan, connectFunc, mockConfirmHandlerSuccess)
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "Failed to declare a queue")
 }
