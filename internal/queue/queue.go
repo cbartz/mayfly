@@ -74,7 +74,9 @@ func connect(uri string) (AmqpChannel, chan *amqp.Error, error) {
 func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool, connectFunc ConnectFunc, confirmHandlerFunc ConfirmHandler) error {
 
 	amqpChannel, connErrorChan, err := connectFunc(q.URI)
-	failOnError(err, "Failed to connect to RabbitMQ") // TODO return error and let caller handle it
+	if err != nil {
+		return errors.New("Failed to connect to RabbitMQ: " + err.Error())
+	}
 
 	_, err = amqpChannel.QueueDeclare(
 		q.Name, // name
@@ -84,7 +86,9 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool
 		false,  // no-wait
 		nil,    // arguments
 	)
-	failOnError(err, "Failed to declare a queue")
+	if err != nil {
+		return errors.New("Failed to declare a queue: " + err.Error())
+	}
 
 	for {
 
@@ -98,7 +102,9 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool
 			log.Println("Connection error:", err)
 			var connectErr error
 			amqpChannel, connErrorChan, connectErr = connectFunc(q.URI)
-			failOnError(connectErr, "Failed to reconnect to RabbitMQ")
+			if connectErr != nil {
+				return errors.New("Failed to reconnect to RabbitMQ: " + connectErr.Error())
+			}
 		}
 
 		deferred_confirm, err := amqpChannel.PublishWithDeferredConfirm(
