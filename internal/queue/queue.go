@@ -20,12 +20,12 @@ type AmqpChannel interface {
 }
 
 type AmqpConnection interface {
-	Channel() (AmqpChannel, error)
+	//Channel() (AmqpChannel, error)
 	Close() error
 }
 
 type ConfirmHandler func(confirmationChan chan bool, deferredConfirmation *amqp.DeferredConfirmation)
-type ConnectFunc func(uri string) (AmqpChannel, chan *amqp.Error, error)
+type ConnectFunc func(uri string) (AmqpConnection, AmqpChannel, chan *amqp.Error, error)
 
 type ProduceMsg struct {
 	msg              []byte
@@ -56,34 +56,34 @@ func (q *AmqpQueue) StartProducer() {
 	}()
 }
 
-func connect(uri string) (AmqpChannel, chan *amqp.Error, error) {
+func connect(uri string) (AmqpConnection, AmqpChannel, chan *amqp.Error, error) {
 	conn, err := amqp.Dial(uri)
 	if err != nil {
-		return nil, nil, errors.New("Failed to connect to RabbitMQ")
+		return nil, nil, nil, errors.New("Failed to connect to RabbitMQ")
 	}
-	//defer conn.Close()
 
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, nil, errors.New("Failed to open a channel")
+		return nil, nil, nil, errors.New("Failed to open a channel")
 	}
 
 	ch.Confirm(false)
 
-	//defer ch.Close()
-
 	errChan := make(chan *amqp.Error, 1)
 	ch.NotifyClose(errChan)
-	return ch, errChan, nil
+	return conn, ch, errChan, nil
 }
 
 func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool, connectFunc ConnectFunc, confirmHandlerFunc ConfirmHandler) error {
 
-	amqpChannel, connErrorChan, err := connectFunc(q.URI)
+	amqpConnection, amqpChannel, connErrorChan, err := connectFunc(q.URI)
+
 	if err != nil {
 		return errors.New("Failed to connect to RabbitMQ: " + err.Error())
 	}
 
+	defer amqpConnection.Close()
+	defer amqpChannel.Close()
 	_, err = amqpChannel.QueueDeclare(
 		q.Name, // name
 		true,   // durable
@@ -107,10 +107,13 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool
 		case err := <-connErrorChan:
 			log.Println("Connection error:", err)
 			var connectErr error
-			amqpChannel, connErrorChan, connectErr = connectFunc(q.URI)
+			amqpConnection, amqpChannel, connErrorChan, connectErr = connectFunc(q.URI)
+
 			if connectErr != nil {
 				return errors.New("Failed to reconnect to RabbitMQ: " + connectErr.Error())
 			}
+			defer amqpConnection.Close()
+			defer amqpChannel.Close()
 		}
 
 		deferred_confirm, err := amqpChannel.PublishWithDeferredConfirm(

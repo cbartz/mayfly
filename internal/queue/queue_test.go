@@ -14,6 +14,11 @@ const QueueWithDeclareError = "queue-with-declare-error"
 type MockAmqpChannel struct {
 	queueName         string
 	publishedMessages [][]byte
+	closed            bool
+}
+
+type MockAmqConnection struct {
+	closed bool
 }
 
 func (ch *MockAmqpChannel) PublishWithDeferredConfirm(exchange string, key string, mandatory, immediate bool, msg amqp.Publishing) (*amqp.DeferredConfirmation, error) {
@@ -30,6 +35,12 @@ func (ch *MockAmqpChannel) QueueDeclare(name string, durable, autoDelete, exclus
 }
 
 func (ch *MockAmqpChannel) Close() error {
+	ch.closed = true
+	return nil
+}
+
+func (c *MockAmqConnection) Close() error {
+	c.closed = true
 	return nil
 }
 
@@ -229,4 +240,36 @@ func TestProducerQueueDeclareError(t *testing.T) {
 	err := Producer(&fakeQueue, producerChan, shutdownChan, connectFunc, mockConfirmHandlerSuccess)
 	assert.Error(t, err)
 	assert.ErrorContains(t, err, "Failed to declare a queue")
+}
+
+func TestProducerClosesResources(t *testing.T) {
+	producerChan := make(chan ProduceMsg, 1)
+	shutdownChan := make(chan bool, 1)
+	fakeQueue := AmqpQueue{
+		URI:          "amqp://guest:guest@localhost:5672/",
+		Name:         "test-queue",
+		ProducerChan: producerChan,
+	}
+	fakeAmqpChan := MockAmqpChannel{}
+	fakeAmqpConn := MockAmqConnection{
+		closed: false,
+	}
+	connectFunc := (func(uri string) (AmqpConnection, AmqpChannel, chan *amqp.Error, error) {
+		return &fakeAmqpConn, &fakeAmqpChan, make(chan *amqp.Error), nil
+	})
+
+	go Producer(&fakeQueue, producerChan, shutdownChan, connectFunc, mockConfirmHandlerSuccess)
+
+	shutdownChan <- true
+
+	assert.Eventually(t,
+		func() bool {
+			return fakeAmqpConn.closed
+		}, time.Second, 1, "connection should be closed")
+
+	assert.Eventually(t,
+		func() bool {
+			return fakeAmqpChan.closed
+		}, time.Second, 1, "channel should should be closed")
+
 }
