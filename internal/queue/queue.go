@@ -16,16 +16,18 @@ type Queue interface {
 type AmqpChannel interface {
 	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp.Table) (amqp.Queue, error)
 	PublishWithDeferredConfirm(exchange string, key string, mandatory, immediate bool, msg amqp.Publishing) (*amqp.DeferredConfirmation, error)
+	NotifyClose(chan *amqp.Error) chan *amqp.Error
+	Confirm(noWait bool) error
 	Close() error
 }
 
 type AmqpConnection interface {
-	//Channel() (AmqpChannel, error)
+	Channel() (AmqpChannel, error)
 	Close() error
 }
 
 type ConfirmHandler func(confirmationChan chan bool, deferredConfirmation *amqp.DeferredConfirmation)
-type ConnectFunc func(uri string) (AmqpConnection, AmqpChannel, chan *amqp.Error, error)
+type ConnectFunc func(uri string) (AmqpConnection, error)
 
 type ProduceMsg struct {
 	msg              []byte
@@ -36,6 +38,18 @@ type AmqpQueue struct {
 	URI          string
 	Name         string
 	ProducerChan chan ProduceMsg
+}
+
+type AmpqConnectionWrapper struct {
+	conn *amqp.Connection
+}
+
+func (q *AmpqConnectionWrapper) Channel() (AmqpChannel, error) {
+	return q.conn.Channel()
+}
+
+func (q *AmpqConnectionWrapper) Close() error {
+	return q.conn.Close()
 }
 
 func NewAmqpQueue(uri, name string) *AmqpQueue {
@@ -56,45 +70,64 @@ func (q *AmqpQueue) StartProducer() {
 	}()
 }
 
-func connect(uri string) (AmqpConnection, AmqpChannel, chan *amqp.Error, error) {
+func connect(uri string) (AmqpConnection, error) {
 	conn, err := amqp.Dial(uri)
 	if err != nil {
-		return nil, nil, nil, errors.New("Failed to connect to RabbitMQ")
+		return nil, errors.New("Failed to connect to RabbitMQ")
 	}
 
-	ch, err := conn.Channel()
+	return &AmpqConnectionWrapper{conn: conn}, nil
+}
+
+func setupChannel(amqpConnection AmqpConnection, queueName string) (AmqpChannel, chan *amqp.Error, error) {
+	amqpChannel, err := amqpConnection.Channel()
 	if err != nil {
-		return nil, nil, nil, errors.New("Failed to open a channel")
+		return nil, nil, errors.New("Failed to open a channel: " + err.Error())
 	}
-
-	ch.Confirm(false)
 
 	errChan := make(chan *amqp.Error, 1)
-	ch.NotifyClose(errChan)
-	return conn, ch, errChan, nil
+	amqpChannel.NotifyClose(errChan)
+
+	err = amqpChannel.Confirm(false)
+	if err != nil {
+		return nil, nil, errors.New("Failed to put channel into confirm mode: " + err.Error())
+	}
+
+	_, err = amqpChannel.QueueDeclare(
+		queueName, // name
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		nil,       // arguments
+	)
+	if err != nil {
+		return nil, nil, errors.New("Failed to declare a queue: " + err.Error())
+	}
+
+	return amqpChannel, errChan, nil
 }
 
 func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool, connectFunc ConnectFunc, confirmHandlerFunc ConfirmHandler) error {
 
-	amqpConnection, amqpChannel, connErrorChan, err := connectFunc(q.URI)
+	amqpConnection, err := connectFunc(q.URI)
 
 	if err != nil {
 		return errors.New("Failed to connect to RabbitMQ: " + err.Error())
 	}
 
-	defer amqpConnection.Close()
-	defer amqpChannel.Close()
-	_, err = amqpChannel.QueueDeclare(
-		q.Name, // name
-		true,   // durable
-		false,  // delete when unused
-		false,  // exclusive
-		false,  // no-wait
-		nil,    // arguments
-	)
+	defer func() {
+		amqpConnection.Close()
+	}()
+
+	amqpChannel, connErrorChan, err := setupChannel(amqpConnection, q.Name)
 	if err != nil {
-		return errors.New("Failed to declare a queue: " + err.Error())
+		return errors.New("Failed to setup channel: " + err.Error())
 	}
+
+	defer func() {
+		amqpChannel.Close()
+	}()
 
 	for {
 
@@ -107,13 +140,16 @@ func Producer(q *AmqpQueue, producerChan chan ProduceMsg, shutdownChan chan bool
 		case err := <-connErrorChan:
 			log.Println("Connection error:", err)
 			var connectErr error
-			amqpConnection, amqpChannel, connErrorChan, connectErr = connectFunc(q.URI)
+			amqpConnection, connectErr = connectFunc(q.URI)
 
 			if connectErr != nil {
 				return errors.New("Failed to reconnect to RabbitMQ: " + connectErr.Error())
 			}
-			defer amqpConnection.Close()
-			defer amqpChannel.Close()
+			var channelSetupErr error
+			amqpChannel, connErrorChan, channelSetupErr = setupChannel(amqpConnection, q.Name)
+			if channelSetupErr != nil {
+				return errors.New("Failed to setup channel: " + channelSetupErr.Error())
+			}
 		}
 
 		deferred_confirm, err := amqpChannel.PublishWithDeferredConfirm(
